@@ -5,9 +5,9 @@ from numpy.polynomial.legendre import legval as np_legval
 import numba as nb
 
 
-x_size = 100
-c_size = 5
-iterations = 100
+x_size = (100,10000)
+c_size = 250
+iterations = 1
 
 def np_kernel(x, c):
     nd = len(c)
@@ -20,9 +20,8 @@ def np_kernel(x, c):
         c1 = tmp + (c1*(2 - 1/nd))*x
     return c0 + c1*x
 
-@nb.guvectorize('f8[::1],f8[::1],f8[::1]', '(n),(m)->(n)', nopython=True, fastmath=True) # , target="parallel"
-def nbg_kernel(x, c, r):
-    for xi in range(r.size):
+def nb_kernel(x, c, r):
+    for xi in range(x.size):
       nd = len(c)
       c0 = c[-2]
       c1 = c[-1]
@@ -32,15 +31,17 @@ def nbg_kernel(x, c, r):
         c0 = c[-ci] - c1*(1 - 1/nd)
         c1 = tmp + (c1*(2 - 1/nd))*x[xi]
       r[xi] = c0 + c1*x[xi]
+nbj_kernel = nb.njit('void(f8[:],f8[:],f8[:])', fastmath=True)(nb_kernel)
+nbg_kernel = nb.guvectorize('f8[::1],f8[::1],f8[::1]', '(n),(m)->(n)', nopython=True, target="parallel", fastmath=True)(nb_kernel) # , target="parallel"
 
-def legval_with(ufunc, x, c, tensor=True):
+def legval_with(ufunc, x, c, args=(), tensor=True):
     c = np.array(c, ndmin=1, copy=0)
     if c.dtype.char in '?bBhHiIlLqQpP':
         c = c.astype(np.double)
     if isinstance(x, (tuple, list)):
         x = np.asarray(x)
-    if isinstance(x, np.ndarray) and tensor:
-        c = c.reshape(c.shape + (1,)*x.ndim)
+#    if isinstance(x, np.ndarray) and tensor:
+#        c = c.reshape(c.shape + (1,)*x.ndim)   # I don't know how to make it work with Numba
 
     if len(c) == 1:
         c0 = c[0]
@@ -50,7 +51,7 @@ def legval_with(ufunc, x, c, tensor=True):
         c1 = c[1]
         return c0 + c1*x # not optimal, merge with below?
     else:
-        return ufunc(x, c)
+        return ufunc(x, c, *args)
 
 
 class bench:
@@ -67,7 +68,14 @@ class bench:
     def time_nbg(self):
         return legval_with(nbg_kernel, self.x, self.c)
 
+    def time_nbj(self):
+        r = np.empty(self.x.shape)
+        print("Shape:", self.c.shape)
+        legval_with(nbj_kernel, self.x, self.c, (r,))
+        return r
+
 def check(orig, probe):
+    print("Shapes:", orig.shape, probe.shape)
     if not np.allclose(orig, probe):
        if orig.shape != probe.shape:
           print("Mismatch shapes:", orig.shape, probe.shape)
@@ -80,9 +88,11 @@ if __name__ == "__main__":
     b = bench()
     b.setup()
     r = b.time_np()
-#    check(r, b.time_nbg())
+    check(r, b.time_nbg())
+#    check(r, b.time_nbj())
     check(r, b.time_npm())
     setup = 'from __main__ import bench as B; b=B();b.setup()'
-#    print("GUfunc    : ", timeit.repeat('b.time_nbg()', setup, number=iterations, repeat=3))
+#    print("Numba.jit : ", timeit.repeat('b.time_nbj()', setup, number=iterations, repeat=3))
+    print("GUfunc    : ", timeit.repeat('b.time_nbg()', setup, number=iterations, repeat=3))
     print("Mod  Numpy: ", timeit.repeat('b.time_npm()', setup, number=iterations, repeat=3))
     print("Orig Numpy: ", timeit.repeat('b.time_np()', setup, number=iterations, repeat=3))
